@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-skill-marketplace"
+version = "0.1.0"
+description = "Build a Claude Code /plugin marketplace from a directory of .skill archives and SKILL.md packages."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "lobsterclause" }]
+keywords = ["claude", "claude-code", "plugin", "marketplace", "skill"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Build Tools",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+claude-skill-marketplace = "claude_skill_marketplace.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/lobsterclause/claude-skill-marketplace"
+Issues = "https://github.com/lobsterclause/claude-skill-marketplace/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_skill_marketplace"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
