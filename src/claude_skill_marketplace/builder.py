@@ -17,6 +17,25 @@ class Skill:
     description: str
     skill_md: str
     source_hint: str
+    # Exactly one of these is set, depending on how the skill was discovered.
+    # Both are used by _write_plugin() to preserve supporting files (e.g.
+    # scripts/, references/, assets/) alongside SKILL.md in the generated
+    # plugin wrapper.
+    package_dir: Path | None = None
+    archive_path: Path | None = None
+
+
+# Files/dirs we never want to copy from a skill's source into its plugin
+# wrapper. VCS metadata, editor scratch, build artifacts, and anything the
+# skill author marked hidden.
+_COPY_IGNORE_NAMES = frozenset(
+    {".git", ".DS_Store", "__pycache__", ".mypy_cache", ".pytest_cache",
+     ".ruff_cache", "node_modules", ".venv", ".env"}
+)
+
+
+def _is_ignored(name: str) -> bool:
+    return name in _COPY_IGNORE_NAMES or name.endswith(".pyc")
 
 
 @dataclass
@@ -76,6 +95,7 @@ def _load_from_archive(path: Path) -> Skill:
         description=meta["description"],
         skill_md=skill_md,
         source_hint=str(path),
+        archive_path=path,
     )
 
 
@@ -87,6 +107,7 @@ def _load_from_package(skill_md_path: Path) -> Skill:
         description=meta["description"],
         skill_md=skill_md,
         source_hint=str(skill_md_path),
+        package_dir=skill_md_path.parent,
     )
 
 
@@ -134,6 +155,63 @@ def collect_skills(
     return sorted(skills.values(), key=lambda s: s.name)
 
 
+def _copy_supporting_from_package(pkg_dir: Path, skill_dir: Path) -> None:
+    """Copy everything from pkg_dir into skill_dir except SKILL.md and noise.
+
+    Preserves arbitrary supporting content authors place alongside SKILL.md —
+    scripts/, references/, assets/, evals/, whatever. Without this, plugins
+    ship SKILL.md referencing files that don't exist in the wrapper.
+    """
+    for entry in pkg_dir.iterdir():
+        if entry.name == "SKILL.md" or _is_ignored(entry.name):
+            continue
+        dest = skill_dir / entry.name
+        if entry.is_dir():
+            shutil.copytree(
+                entry,
+                dest,
+                ignore=shutil.ignore_patterns(*_COPY_IGNORE_NAMES, "*.pyc"),
+                dirs_exist_ok=True,
+            )
+        else:
+            shutil.copy2(entry, dest)
+
+
+def _copy_supporting_from_archive(archive_path: Path, skill_dir: Path) -> None:
+    """Extract archive contents into skill_dir except SKILL.md and noise.
+
+    Archive layouts vary: some have a single top-level wrapper dir (common
+    when zipped from a package), others are flat. We strip a single common
+    top-level dir when every member shares it so the output matches the
+    package-loaded layout (SKILL.md at skill_dir root, siblings next to it).
+    """
+    with zipfile.ZipFile(archive_path) as zf:
+        members = [m for m in zf.namelist() if not m.endswith("/")]
+        if not members:
+            return
+        prefix = _common_top_level(members)
+        for member in members:
+            rel = member[len(prefix):] if prefix else member
+            if not rel or rel.endswith("SKILL.md") or _is_ignored(Path(rel).name):
+                continue
+            if any(_is_ignored(part) for part in Path(rel).parts):
+                continue
+            dest = skill_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
+def _common_top_level(names: list[str]) -> str:
+    """Return the shared top-level dir (including trailing slash) or '' if none."""
+    first = names[0]
+    slash = first.find("/")
+    if slash == -1:
+        return ""
+    prefix = first[: slash + 1]
+    return prefix if all(n.startswith(prefix) for n in names) else ""
+
+
 def _write_plugin(
     skill: Skill,
     plugins_dir: Path,
@@ -147,6 +225,10 @@ def _write_plugin(
     skill_dir.mkdir(parents=True, exist_ok=True)
     meta_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(skill.skill_md, encoding="utf-8")
+    if skill.package_dir is not None:
+        _copy_supporting_from_package(skill.package_dir, skill_dir)
+    elif skill.archive_path is not None:
+        _copy_supporting_from_archive(skill.archive_path, skill_dir)
     plugin_json: dict[str, object] = {
         "name": skill.name,
         "version": version,

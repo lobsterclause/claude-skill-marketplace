@@ -162,3 +162,121 @@ def test_build_marketplace_idempotent_regenerates_plugins_dir(tmp_path: Path):
 
     assert not stale.exists()
     assert (output / "plugins" / "sample-skill").exists()
+
+
+def test_build_marketplace_preserves_package_support_dirs(tmp_path: Path):
+    """Skills shipped as a directory (SKILL.md + siblings) must have siblings
+    preserved in the generated plugin wrapper. Without this, any skill whose
+    SKILL.md references scripts/, references/, or assets/ ships broken."""
+    source = tmp_path / "src"
+    pkg = source / "my-skill"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: pkg skill with support files\n---\n"
+    )
+    (pkg / "scripts").mkdir()
+    (pkg / "scripts" / "run.sh").write_text("#!/usr/bin/env bash\necho hi\n")
+    (pkg / "references").mkdir()
+    (pkg / "references" / "notes.md").write_text("# notes\n")
+    (pkg / "assets").mkdir()
+    (pkg / "assets" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    output = tmp_path / "out"
+    build_marketplace(
+        source=source,
+        output=output,
+        marketplace_name="m",
+        marketplace_description="d",
+        owner=Owner(name="t"),
+    )
+
+    skill_dir = output / "plugins" / "my-skill" / "skills" / "my-skill"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "scripts" / "run.sh").read_text().startswith("#!/usr/bin/env bash")
+    assert (skill_dir / "references" / "notes.md").read_text() == "# notes\n"
+    assert (skill_dir / "assets" / "logo.png").read_bytes().startswith(b"\x89PNG")
+
+
+def test_build_marketplace_skips_noise_in_package(tmp_path: Path):
+    source = tmp_path / "src"
+    pkg = source / "noisy-skill"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        "---\nname: noisy-skill\ndescription: has noise\n---\n"
+    )
+    (pkg / ".git").mkdir()
+    (pkg / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "foo.cpython-311.pyc").write_bytes(b"bogus")
+    (pkg / ".DS_Store").write_bytes(b"noise")
+    (pkg / "real.txt").write_text("keep me\n")
+
+    output = tmp_path / "out"
+    build_marketplace(
+        source=source,
+        output=output,
+        marketplace_name="m",
+        marketplace_description="d",
+        owner=Owner(name="t"),
+    )
+
+    skill_dir = output / "plugins" / "noisy-skill" / "skills" / "noisy-skill"
+    assert (skill_dir / "real.txt").exists()
+    assert not (skill_dir / ".git").exists()
+    assert not (skill_dir / "__pycache__").exists()
+    assert not (skill_dir / ".DS_Store").exists()
+
+
+def test_build_marketplace_preserves_archive_support_files(tmp_path: Path):
+    """.skill archives that bundle support files must also have them extracted
+    into the plugin wrapper — symmetric with the package-dir path."""
+    source = tmp_path / "src"
+    source.mkdir()
+    archive = source / "packed.skill"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "packed/SKILL.md",
+            "---\nname: packed-skill\ndescription: archive with extras\n---\n",
+        )
+        zf.writestr("packed/scripts/helper.sh", "#!/bin/sh\necho ok\n")
+        zf.writestr("packed/references/guide.md", "# guide\n")
+
+    output = tmp_path / "out"
+    build_marketplace(
+        source=source,
+        output=output,
+        marketplace_name="m",
+        marketplace_description="d",
+        owner=Owner(name="t"),
+    )
+
+    skill_dir = output / "plugins" / "packed-skill" / "skills" / "packed-skill"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "scripts" / "helper.sh").read_text() == "#!/bin/sh\necho ok\n"
+    assert (skill_dir / "references" / "guide.md").read_text() == "# guide\n"
+
+
+def test_build_marketplace_archive_with_flat_layout(tmp_path: Path):
+    """Archives without a wrapper dir still extract cleanly."""
+    source = tmp_path / "src"
+    source.mkdir()
+    archive = source / "flat.skill"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "SKILL.md",
+            "---\nname: flat-skill\ndescription: no wrapper dir\n---\n",
+        )
+        zf.writestr("extra.txt", "side\n")
+
+    output = tmp_path / "out"
+    build_marketplace(
+        source=source,
+        output=output,
+        marketplace_name="m",
+        marketplace_description="d",
+        owner=Owner(name="t"),
+    )
+
+    skill_dir = output / "plugins" / "flat-skill" / "skills" / "flat-skill"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "extra.txt").read_text() == "side\n"
