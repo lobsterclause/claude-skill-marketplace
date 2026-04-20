@@ -184,7 +184,13 @@ def _copy_supporting_from_archive(archive_path: Path, skill_dir: Path) -> None:
     when zipped from a package), others are flat. We strip a single common
     top-level dir when every member shares it so the output matches the
     package-loaded layout (SKILL.md at skill_dir root, siblings next to it).
+
+    Security: validates each destination path stays inside skill_dir. A
+    malicious `.skill` archive could otherwise write outside the target via
+    `../` traversal (Zip Slip / CWE-22). This matters: marketplaces exist to
+    ingest third-party skills, which is exactly the attack surface.
     """
+    skill_dir_resolved = skill_dir.resolve()
     with zipfile.ZipFile(archive_path) as zf:
         members = [m for m in zf.namelist() if not m.endswith("/")]
         if not members:
@@ -196,20 +202,59 @@ def _copy_supporting_from_archive(archive_path: Path, skill_dir: Path) -> None:
                 continue
             if any(_is_ignored(part) for part in Path(rel).parts):
                 continue
+            # Reject path-traversal attempts up front; then double-check with
+            # a resolved-path containment test in case symlinks or odd
+            # normalization let something through the part-based check.
+            if Path(rel).is_absolute() or ".." in Path(rel).parts:
+                continue
             dest = skill_dir / rel
+            try:
+                dest.resolve().relative_to(skill_dir_resolved)
+            except ValueError:
+                continue
             dest.parent.mkdir(parents=True, exist_ok=True)
+            info = zf.getinfo(member)
             with zf.open(member) as src, open(dest, "wb") as out:
                 shutil.copyfileobj(src, out)
+            # zip stores Unix mode bits in external_attr >> 16. copyfileobj
+            # doesn't preserve them, so shell scripts would ship
+            # non-executable. Apply the stored mode when present.
+            mode = (info.external_attr >> 16) & 0o777
+            if mode:
+                dest.chmod(mode)
+
+
+# Top-level entries the archive may contain that shouldn't count when
+# computing the shared wrapper prefix. macOS Finder zips include __MACOSX/
+# alongside the real wrapper; a stray README at root is also common. Without
+# this filter, one stray entry collapses the prefix to empty and every
+# extracted file ends up nested inside the wrapper dir instead of flat.
+_TOP_LEVEL_NOISE = frozenset({"__MACOSX", ".DS_Store"})
 
 
 def _common_top_level(names: list[str]) -> str:
-    """Return the shared top-level dir (including trailing slash) or '' if none."""
-    first = names[0]
+    """Return the shared top-level dir (including trailing slash) or '' if none.
+
+    Ignores standard noise entries (`__MACOSX`, `.DS_Store`) when deciding
+    whether a prefix is shared — Finder-zipped archives on macOS would
+    otherwise always defeat prefix stripping.
+    """
+    def _top(name: str) -> str:
+        slash = name.find("/")
+        return name if slash == -1 else name[:slash]
+
+    def _is_noise(name: str) -> bool:
+        return _top(name) in _TOP_LEVEL_NOISE
+
+    signal = [n for n in names if not _is_noise(n)]
+    if not signal:
+        return ""
+    first = signal[0]
     slash = first.find("/")
     if slash == -1:
         return ""
     prefix = first[: slash + 1]
-    return prefix if all(n.startswith(prefix) for n in names) else ""
+    return prefix if all(n.startswith(prefix) for n in signal) else ""
 
 
 def _write_plugin(
