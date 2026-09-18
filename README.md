@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/claude-skill-marketplace-banner.png" alt="Claude Skill Marketplace — Package skills. Load only what you need." width="100%" />
+</p>
+
 # claude-skill-marketplace
 
 Build a Claude Code `/plugin` marketplace from a directory of `.skill` archives
